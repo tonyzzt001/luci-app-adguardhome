@@ -24,17 +24,6 @@ pipeline {
     stages {
         stage('初始化') {
             steps {
-                script {
-                    def gitCommit = sh(script: 'git rev-parse HEAD', returnStdout: true).trim().substring(0, 8)
-                    echo "========================================"
-                    echo "Project: ${PROJECT_NAME}"
-                    echo "Version: ${OPENWRT_VERSION}"
-                    echo "Arch: ${TARGET_ARCH}"
-                    echo "Build: ${BUILD_NUMBER}"
-                    echo "Git: ${gitCommit}"
-                    echo "========================================"
-                }
-
                 cleanWs(
                     cleanWhenAborted: true,
                     cleanWhenFailure: true,
@@ -53,6 +42,21 @@ pipeline {
                         ]]
                     ])
                 }
+            }
+        }
+
+        stage('显示信息') {
+            steps {
+                sh '''#!/bin/bash
+cd source
+GIT_COMMIT=$(git rev-parse HEAD | cut -c1-8)
+echo "========================================"
+echo "Project: ${PROJECT_NAME}"
+echo "Version: ${OPENWRT_VERSION}"
+echo "Arch: ${TARGET_ARCH}"
+echo "Build: ${BUILD_NUMBER}"
+echo "Git: ${GIT_COMMIT}"
+echo "========================================"'''
             }
         }
 
