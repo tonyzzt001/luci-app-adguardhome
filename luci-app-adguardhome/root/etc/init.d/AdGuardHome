@@ -313,29 +313,64 @@ get_filesystem()
 
 config_editor()
 {
-	awk -v yaml="$1" -v value="$2" -v file="$3" -v ro="$4" '
-	BEGIN{split(yaml,part,"\.");s="";i=1;l=length(part);}
-    {
-        if (match($0,s""part[i]":"))
-        {
-            if (i==l)
-            {
-                split($0,t,": ");
-				if (ro==""){
-				system("sed -i '\''"FNR"c \\"t[1]": "value"'\'' "file);
-				}else{
-				print(t[2]);
-				}
-				exit;
-            }
-            s=s"[- ]{2}";
-            i++;
-        }
-    }' $3
+	local yaml="$1"
+	local value="$2"
+	local file="$3"
+	local ro="$4"
+	if [ ! -f "$file" ]; then
+		[ -z "$ro" ] && return 1
+		return 1
+	fi
+	local line_num=0
+	local found=0
+	local IFS='.'
+	local parts
+	read -ra parts <<< "$yaml"
+	local depth=0
+	while IFS= read -r line; do
+		line_num=$((line_num + 1))
+		if [ "$depth" -lt "${#parts[@]}" ]; then
+			local pattern="^[[:space:]]*${parts[$depth]}[[:space:]]*:"
+			if [[ "$line" =~ $pattern ]]; then
+				depth=$((depth + 1))
+				if [ "$depth" -eq "${#parts[@]}" ]; then
+					if [ -z "$ro" ]; then
+						sed -i "${line_num}s/.*/  ${parts[$((depth-1))]}: ${value}/" "$file"
+						found=1
+					else
+						echo "$line" | sed 's/.*: *//'
+						found=1
+					fi
+					break
+				fi
+			fi
+		fi
+	done < "$file"
+	[ "$found" -eq 0 ] && [ -z "$ro" ] && return 1
+	return 0
+}
+
+check_dependencies()
+{
+	local missing=""
+	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || missing="${missing}curl/wget "
+	command -v awk >/dev/null 2>&1 || missing="${missing}awk "
+	command -v sed >/dev/null 2>&1 || missing="${missing}sed "
+	command -v grep >/dev/null 2>&1 || missing="${missing}grep "
+	if [ -n "$missing" ]; then
+		logger -t AdGuardHome "Missing dependencies:${missing}"
+		echo "ERROR: Missing required tools:${missing}" >&2
+		return 1
+	fi
+	return 0
 }
 
 boot_service() {
 	rm /var/run/AdGserverdis >/dev/null 2>&1
+	check_dependencies || {
+		echo "Dependency check failed"
+		return 1
+	}
 	config_load "${CONFIGURATION}"
 	config_get waitonboot $CONFIGURATION waitonboot "0"
 	config_get_bool enabled $CONFIGURATION enabled 0
@@ -361,56 +396,91 @@ restore()
 {
 	config_get workdir $CONFIGURATION workdir "/etc/config/adGuardConfig/workspace"
 	config_get backupwdpath $CONFIGURATION backupwdpath "/etc/config/adGuardConfig/workspace"
-	cp -u -r -f $backupwdpath/data $workdir
+	if [ ! -d "$backupwdpath/data" ]; then
+		logger -t AdGuardHome "Backup directory not found: $backupwdpath/data"
+		return 1
+	fi
+	if [ -d "$backupwdpath/data" ]; then
+		cp -u -r -f $backupwdpath/data $workdir 2>/dev/null && \
+			logger -t AdGuardHome "Restore completed from $backupwdpath" || \
+			logger -t AdGuardHome "Restore failed"
+	fi
 }
 backup() {
 	config_get backupwdpath $CONFIGURATION backupwdpath "/etc/config/adGuardConfig/workspace"
 	mkdir -p $backupwdpath/data
 	config_get workdir $CONFIGURATION workdir "/etc/config/adGuardConfig/workspace"
 	config_get backupfile $CONFIGURATION backupfile ""
-	for one in $backupfile;
-	do
-		while :
-		do
+	if [ ! -d "$workdir/data" ]; then
+		logger -t AdGuardHome "Workdir data not found: $workdir/data"
+		return 1
+	fi
+	for one in $backupfile; do
+		while :; do
 			if [ -d "$backupwdpath/data/$one" ]; then
 				cpret=$(cp -u -r -f $workdir/data/$one $backupwdpath/data 2>&1)
 			else
 				cpret=$(cp -u -r -f $workdir/data/$one $backupwdpath/data/$one 2>&1)
 			fi
 			echo "$cpret"
-			echo "$cpret" | grep "no space left on device"
+			echo "$cpret" | grep -q "no space left on device"
 			if [ "$?" == "0" ]; then
-				echo "磁盘已满,删除log重试中"
+				echo "Disk full, retrying after deleting logs"
 				del_querylog && continue
 				rm -f -r $backupwdpath/data/filters
 				rm -f -r $workdir/data/filters && continue
 				echo "backup failed"
+				logger -t AdGuardHome "Backup failed: disk full"
 			fi
 			break
 		done
 	done
+	logger -t AdGuardHome "Backup completed to $backupwdpath"
 }
 start_service() {
-	# Reading config
 	rm /var/run/AdGserverdis >/dev/null 2>&1
 	config_load "${CONFIGURATION}"
-	# update password
-	config_get hashpass $CONFIGURATION hashpass ""
+	config_get binpath $CONFIGURATION binpath "/etc/config/adGuardConfig/AdGuardHome"
 	config_get configpath $CONFIGURATION configpath "/etc/config/adGuardConfig/AdGuardHome.yaml"
-	if [ -n "$hashpass" ]; then
-		config_editor "users.password" "$hashpass" "$configpath"
-		uci set $CONFIGURATION.$CONFIGURATION.hashpass=""
-	fi
-	local enabled
+	config_get workdir $CONFIGURATION workdir "/etc/config/adGuardConfig/workspace"
 	config_get_bool enabled $CONFIGURATION enabled 0
-	# update crontab
-	do_crontab
+
+	if [ ! -f "$binpath" ]; then
+		logger -t AdGuardHome "Binary not found: $binpath"
+		echo "ERROR: AdGuardHome binary not found" >&2
+		_do_redirect 0
+		/usr/share/AdGuardHome/update_core.sh 2>&1 >/tmp/AdGuardHome_update.log &
+		exit 0
+	fi
+
+	if [ ! -f "$configpath" ]; then
+		logger -t AdGuardHome "Config not found: $configpath"
+		echo "WARNING: Config file not found, will use default" >&2
+	fi
+
+	if [ ! -d "$workdir" ]; then
+		mkdir -p "$workdir" 2>/dev/null
+		[ ! -d "$workdir" ] && {
+			logger -t AdGuardHome "Cannot create workdir: $workdir"
+			echo "ERROR: Cannot create work directory" >&2
+			return 1
+		}
+	fi
+
+	config_get hashpass $CONFIGURATION hashpass ""
+	if [ -n "$hashpass" ]; then
+		if [ -f "$configpath" ]; then
+			config_editor "users.password" "$hashpass" "$configpath"
+			uci set $CONFIGURATION.$CONFIGURATION.hashpass=""
+		fi
+	fi
+
 	if [ "$enabled" == "0" ]; then
 		_do_redirect 0
 		return
 	fi
-	#what need to do before reload
-	config_get workdir $CONFIGURATION workdir "/etc/config/adGuardConfig/workspace"
+
+	do_crontab
 
 	config_get backupfile $CONFIGURATION backupfile ""
 	mkdir -p $workdir/data
