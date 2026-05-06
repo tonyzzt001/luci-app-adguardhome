@@ -39,13 +39,13 @@ define Package/luci-app-adguardhome/conffiles
 endef
 
 define Package/luci-app-adguardhome/install
-    $(INSTALL_DIR) $(1)/usr/lib/lua/luci
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci
 	cp -pR ./luasrc/* $(1)/usr/lib/lua/luci
 	$(INSTALL_DIR) $(1)/
 	cp -pR ./root/* $(1)/
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
-	po2lmo ./po/zh-cn/AdGuardHome.po $(1)/usr/lib/lua/luci/i18n/AdGuardHome.zh-cn.lmo
-	po2lmo ./po/en/AdGuardHome.po $(1)/usr/lib/lua/luci/i18n/AdGuardHome.en.lmo
+	-which po2lmo >/dev/null 2>&1 && po2lmo ./po/zh-cn/AdGuardHome.po $(1)/usr/lib/lua/luci/i18n/AdGuardHome.zh-cn.lmo || true
+	-which po2lmo >/dev/null 2>&1 && po2lmo ./po/en/AdGuardHome.po $(1)/usr/lib/lua/luci/i18n/AdGuardHome.en.lmo || true
 endef
 
 define Package/luci-app-adguardhome/postinst
