@@ -325,13 +325,13 @@ config_editor()
 	local found=0
 	local IFS='.'
 	local parts
-	read -ra parts <<< "$yaml"
+	parts=$(echo "$yaml" | tr '.' ' ')
 	local depth=0
 	while IFS= read -r line; do
 		line_num=$((line_num + 1))
 		if [ "$depth" -lt "${#parts[@]}" ]; then
 			local pattern="^[[:space:]]*${parts[$depth]}[[:space:]]*:"
-			if [[ "$line" =~ $pattern ]]; then
+			if echo "$line" | grep -qE "$pattern"; then
 				depth=$((depth + 1))
 				if [ "$depth" -eq "${#parts[@]}" ]; then
 					if [ -z "$ro" ]; then
