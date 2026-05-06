@@ -29,21 +29,21 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - name: "23.05.3"
+          - name: "23.05.6"
             short: "23"
             gcc: "12.3.0"
             ext: "tar.xz"
-            url: "https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-          - name: "24.10.3"
+            url: "https://downloads.openwrt.org/releases/23.05.6/targets/x86/64/openwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          - name: "24.10.6"
             short: "24"
             gcc: "13.3.0"
             ext: "tar.zst"
-            url: "https://downloads.openwrt.org/releases/24.10.3/targets/x86/64/openwrt-sdk-24.10.3-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-          - name: "25.12.3"
+            url: "https://downloads.openwrt.org/releases/24.10.6/targets/x86/64/openwrt-sdk-24.10.6-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          - name: "25.12.2"
             short: "25"
             gcc: "14.3.0"
             ext: "tar.zst"
-            url: "https://downloads.openwrt.org/releases/25.12.3/targets/x86/64/openwrt-sdk-25.12.3-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+            url: "https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
     name: Compile OpenWrt ${{ matrix.version.short }}
     steps:
       - name: Checkout Repository
@@ -69,6 +69,7 @@ jobs:
           else
             tar xf SDK.${{ matrix.version.ext }} --strip-components=1
           fi
+          rm -f SDK.${{ matrix.version.ext }}
           ls -la
 
       - name: Prepare Package Source
@@ -96,10 +97,10 @@ jobs:
 
       - name: Collect Build Artifacts
         run: |
-          cd ..
-          mkdir -p ipk_output
           VER="${{ matrix.version.short }}"
-          for f in openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
+          # Collect IPK files into workspace directory (not outside it)
+          mkdir -p ipk_output
+          for f in ../openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
             if [ -f "$f" ]; then
               filename=$(basename "$f")
               newname=$(echo "$filename" | sed "s/_all_/_openwrt${VER}_all_/")
@@ -113,5 +114,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-adguardhome-openwrt${{ matrix.version.short }}
-          path: ../ipk_output/*.ipk
+          path: ipk_output/*.ipk
           retention-days: 90
