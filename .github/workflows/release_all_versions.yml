@@ -1,0 +1,175 @@
+name: Compile and Release All OpenWrt Versions
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "luci-app-adguardhome/**"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release Version (e.g., 1.8-13) - leave empty to auto-detect'
+        required: false
+        default: ''
+      release_title:
+        description: 'Release Title'
+        required: false
+        default: 'luci-app-adguardhome Release'
+      skip_release:
+        description: 'Skip GitHub Release (compile only)'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  Compile-All:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - name: "23.05.3"
+            short: "23"
+            gcc: "12.3.0"
+            url: "https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          - name: "24.10.0"
+            short: "24"
+            gcc: "13.3.0"
+            url: "https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+          - name: "25.12.2"
+            short: "25"
+            gcc: "14.3.0"
+            url: "https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.xz"
+    name: Compile OpenWrt ${{ matrix.version.short }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential curl git tar wget python3 rsync
+
+      - name: Download OpenWrt ${{ matrix.version.short }} SDK
+        run: |
+          cd ..
+          mkdir -p openwrt-sdk
+          curl -SLk --connect-timeout 30 --retry 2 \
+            "${{ matrix.version.url }}" \
+            -o "./openwrt-sdk/SDK.tar.xz"
+          cd openwrt-sdk
+          tar xf SDK.tar.xz --strip-components=1
+
+      - name: Prepare Package Source
+        run: |
+          cd ../openwrt-sdk
+          mkdir -p package/custom/luci-app-adguardhome
+          cp -rf ../luci-app-adguardhome/luci-app-adguardhome/. package/custom/luci-app-adguardhome/
+
+      - name: Update Feeds
+        run: |
+          cd ../openwrt-sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure SDK
+        run: |
+          cd ../openwrt-sdk
+          make defconfig
+
+      - name: Compile IPK Package
+        run: |
+          cd ../openwrt-sdk
+          make package/custom/luci-app-adguardhome/compile V=s
+
+      - name: Collect Build Artifacts
+        run: |
+          cd ..
+          mkdir -p ipk_output
+          VER="${{ matrix.version.short }}"
+          for f in openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
+            filename=$(basename "$f")
+            newname=$(echo "$filename" | sed "s/_all_/_openwrt${VER}_all_/")
+            cp "$f" "ipk_output/${newname}"
+          done
+          ls -la ipk_output/
+
+      - name: Upload IPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-adguardhome-openwrt${{ matrix.version.short }}
+          path: ../ipk_output/*.ipk
+          retention-days: 90
+
+  Create-Release:
+    needs: Compile-All
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && !failure() && (github.event_name == 'workflow_dispatch' && inputs.skip_release != true) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Get Release Version
+        id: version
+        run: |
+          if [ -n "${{ inputs.release_version }}" ]; then
+            VER="${{ inputs.release_version }}"
+          else
+            PKG_VER=$(grep "PKG_VERSION:=" ./luci-app-adguardhome/Makefile | awk -F "=" "{print \$2}")
+            PKG_REL=$(grep "PKG_RELEASE:=" ./luci-app-adguardhome/Makefile | awk -F "=" "{print \$2}")
+            VER="${PKG_VER}-${PKG_REL}"
+          fi
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Release Version: $VER"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./all_ipks
+
+      - name: List Artifacts
+        run: |
+          find ./all_ipks -name "*.ipk" -type f
+          echo "---"
+          ls -laR ./all_ipks/
+
+      - name: Generate Release Notes
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          cat > ./release_notes.md << 'EOF'
+          ## luci-app-adguardhome Release
+          
+          ### Version: v${VER}
+          
+          Compiled for OpenWrt x86_64 architectures:
+          - OpenWrt 23.05.x (GCC 12.3.0)
+          - OpenWrt 24.10.x (GCC 13.3.0)
+          - OpenWrt 25.12.x (GCC 14.3.0)
+          
+          ### Installation
+          \\`\\`\\`bash
+          opkg install luci-app-adguardhome_*.ipk
+          \\`\\`\\`
+          
+          ### Changes
+          - Auto-compiled from master branch
+          - Three versions compiled in parallel
+          EOF
+          sed -i "s/\${VER}/$VER/g" ./release_notes.md
+          cat ./release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: luci-app-adguardhome Release v${{ steps.version.outputs.version }}
+          body_path: ./release_notes.md
+          files: |
+            ./all_ipks/**/*.ipk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
