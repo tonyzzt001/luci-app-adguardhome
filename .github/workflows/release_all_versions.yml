@@ -97,12 +97,15 @@ jobs:
 
       - name: Collect Build Artifacts
         run: |
-          VER="${{ matrix.version.short }}"
+          SDK_VERSION="${{ matrix.version.name }}"
           mkdir -p ipk_output
+          # Extract PKG_VERSION and PKG_RELEASE from Makefile
+          PKG_VER=$(grep '^PKG_VERSION:=' luci-app-adguardhome/Makefile | cut -d'=' -f2 | tr -d ' ')
+          PKG_REL=$(grep '^PKG_RELEASE:=' luci-app-adguardhome/Makefile | cut -d'=' -f2 | tr -d ' ')
           for f in ../openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
             if [ -f "$f" ]; then
-              filename=$(basename "$f")
-              newname=$(echo "$filename" | sed "s/_all_/_openwrt${VER}_all_/")
+              # New naming format: luci-app-adguardhome_1.8_13_openwrt-23.05.6_all.ipk
+              newname="luci-app-adguardhome_${PKG_VER}_${PKG_REL}_openwrt-${SDK_VERSION}_all.ipk"
               cp "$f" "ipk_output/${newname}"
               echo "Found: $newname"
             fi
@@ -161,18 +164,21 @@ jobs:
           COMMIT_MSG=$(git log -1 --pretty=format:"%s" HEAD)
           COMMIT_SHA=$(git rev-parse --short HEAD)
 
-          # Build package table from actual files
-          echo "| OpenWrt Version | Package |" > packages_table.md
-          echo "|----------------|---------|" >> packages_table.md
+          # Build package table from actual files - guaranteed to match assets!
+          echo "| OpenWrt SDK Version | Package Filename |" > packages_table.md
+          echo "|-------------------|----------------|" >> packages_table.md
           for ipk in artifacts/*.ipk; do
             filename=$(basename "$ipk")
-            # Extract version from filename pattern: luci-app-adguardhome_1.8-13_openwrt23_all.ipk
-            if echo "$filename" | grep -q "openwrt23"; then
-              echo "| 23.05.x (GCC 12.3) | \`$filename\` |" >> packages_table.md
-            elif echo "$filename" | grep -q "openwrt24"; then
-              echo "| 24.10.x (GCC 13.3) | \`$filename\` |" >> packages_table.md
-            elif echo "$filename" | grep -q "openwrt25"; then
-              echo "| 25.12.x (GCC 14.3) | \`$filename\` |" >> packages_table.md
+            # Extract SDK version from filename pattern: luci-app-adguardhome_1.8_13_openwrt-23.05.6_all.ipk
+            if echo "$filename" | grep -q "openwrt-23"; then
+              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
+              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
+            elif echo "$filename" | grep -q "openwrt-24"; then
+              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
+              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
+            elif echo "$filename" | grep -q "openwrt-25"; then
+              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
+              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
             else
               echo "| x86_64 | \`$filename\` |" >> packages_table.md
             fi
