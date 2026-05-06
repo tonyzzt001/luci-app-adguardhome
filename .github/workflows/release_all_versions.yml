@@ -154,23 +154,36 @@ jobs:
           echo "=== File checksums ==="
           sha256sum artifacts/*.ipk 2>/dev/null || true
 
-      - name: Generate Release Notes
+      - name: Generate Release Notes (Dynamic from actual files)
         id: notes
         run: |
           # Get latest commit message
           COMMIT_MSG=$(git log -1 --pretty=format:"%s" HEAD)
           COMMIT_SHA=$(git rev-parse --short HEAD)
 
+          # Build package table from actual files
+          echo "| OpenWrt Version | Package |" > packages_table.md
+          echo "|----------------|---------|" >> packages_table.md
+          for ipk in artifacts/*.ipk; do
+            filename=$(basename "$ipk")
+            # Extract version from filename pattern: luci-app-adguardhome_1.8-13_openwrt23_all.ipk
+            if echo "$filename" | grep -q "openwrt23"; then
+              echo "| 23.05.x (GCC 12.3) | \`$filename\` |" >> packages_table.md
+            elif echo "$filename" | grep -q "openwrt24"; then
+              echo "| 24.10.x (GCC 13.3) | \`$filename\` |" >> packages_table.md
+            elif echo "$filename" | grep -q "openwrt25"; then
+              echo "| 25.12.x (GCC 14.3) | \`$filename\` |" >> packages_table.md
+            else
+              echo "| x86_64 | \`$filename\` |" >> packages_table.md
+            fi
+          done
+
           cat > release_notes.md << NOTES
           ## luci-app-adguardhome v${{ steps.version.outputs.version }}
 
           ### 📦 IPK Packages
 
-          | OpenWrt Version | Package |
-          |----------------|---------|
-          | 23.05.x (GCC 12.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt23_all.ipk\` |
-          | 24.10.x (GCC 13.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt24_all.ipk\` |
-          | 25.12.x (GCC 14.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt25_all.ipk\` |
+          $(cat packages_table.md)
 
           ### 📝 Recent Changes
 
@@ -202,5 +215,6 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
