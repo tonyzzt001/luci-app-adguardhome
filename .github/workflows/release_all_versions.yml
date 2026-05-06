@@ -90,7 +90,7 @@ jobs:
           cd ../openwrt-sdk
           make defconfig
 
-      - name: Compile IPK Package
+      - name: Compile Package
         run: |
           cd ../openwrt-sdk
           make package/custom/luci-app-adguardhome/compile V=s 2>&1 | tail -100
@@ -99,24 +99,37 @@ jobs:
         run: |
           SDK_VERSION="${{ matrix.version.name }}"
           mkdir -p ipk_output
+
           # Extract PKG_VERSION and PKG_RELEASE from Makefile
           PKG_VER=$(grep '^PKG_VERSION:=' luci-app-adguardhome/Makefile | cut -d'=' -f2 | tr -d ' ')
           PKG_REL=$(grep '^PKG_RELEASE:=' luci-app-adguardhome/Makefile | cut -d'=' -f2 | tr -d ' ')
+
+          # 1. Collect .ipk files (OpenWrt 23/24)
           for f in ../openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
             if [ -f "$f" ]; then
-              # New naming format: luci-app-adguardhome_1.8_13_openwrt-23.05.6_all.ipk
               newname="luci-app-adguardhome_${PKG_VER}_${PKG_REL}_openwrt-${SDK_VERSION}_all.ipk"
               cp "$f" "ipk_output/${newname}"
               echo "Found: $newname"
             fi
           done
+
+          # 2. Collect .apk files (OpenWrt 25+)
+          for f in ../openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome-*.apk; do
+            if [ -f "$f" ]; then
+              newname="luci-app-adguardhome_${PKG_VER}_${PKG_REL}_openwrt-${SDK_VERSION}_all.apk"
+              cp "$f" "ipk_output/${newname}"
+              echo "Found: $newname"
+            fi
+          done
+
+          echo "=== Output files ==="
           ls -la ipk_output/
 
-      - name: Upload IPK Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-adguardhome-openwrt${{ matrix.version.short }}
-          path: ipk_output/*.ipk
+          path: ipk_output/*.*
           retention-days: 90
 
   Release:
@@ -135,7 +148,6 @@ jobs:
           if [ -n "${{ inputs.release_version }}" ]; then
             VERSION="${{ inputs.release_version }}"
           else
-            # Auto-detect from Makefile
             VERSION=$(grep 'PKG_VERSION\|PKG_RELEASE' luci-app-adguardhome/Makefile | \
               awk -F':=' '{gsub(/[ \t]+/,"",$2); print $2}' | tr '\n' '-' | sed 's/-$//')
           fi
@@ -151,64 +163,59 @@ jobs:
 
       - name: List Artifacts
         run: |
-          echo "=== Downloaded IPK files ==="
+          echo "=== Downloaded packages ==="
           ls -la artifacts/
           echo ""
           echo "=== File checksums ==="
-          sha256sum artifacts/*.ipk 2>/dev/null || true
+          sha256sum artifacts/*.* 2>/dev/null || true
 
-      - name: Generate Release Notes (Dynamic from actual files)
-        id: notes
+      - name: Generate Release Notes
         run: |
-          # Get latest commit message
           COMMIT_MSG=$(git log -1 --pretty=format:"%s" HEAD)
           COMMIT_SHA=$(git rev-parse --short HEAD)
 
-          # Build package table from actual files - guaranteed to match assets!
-          echo "| OpenWrt SDK Version | Package Filename |" > packages_table.md
-          echo "|-------------------|----------------|" >> packages_table.md
-          for ipk in artifacts/*.ipk; do
-            filename=$(basename "$ipk")
-            # Extract SDK version from filename pattern: luci-app-adguardhome_1.8_13_openwrt-23.05.6_all.ipk
-            if echo "$filename" | grep -q "openwrt-23"; then
-              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
-              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
-            elif echo "$filename" | grep -q "openwrt-24"; then
-              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
-              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
-            elif echo "$filename" | grep -q "openwrt-25"; then
-              SDK_VER=$(echo "$filename" | sed 's/.*openwrt-\([0-9.]*\)_all.ipk/\1/')
-              echo "| $SDK_VER | \`$filename\` |" >> packages_table.md
-            else
-              echo "| x86_64 | \`$filename\` |" >> packages_table.md
-            fi
-          done
+          # Build table from actual files
+          {
+            echo "| OpenWrt Version | Package |"
+            echo "|----------------|---------|"
+            for pkg in artifacts/*.*; do
+              [ -f "$pkg" ] || continue
+              filename=$(basename "$pkg")
+              # Extract version from: luci-app-adguardhome_1.8_13_openwrt-23.05.6_all.ipk
+              sdk=$(echo "$filename" | grep -oP 'openwrt-\K[0-9.]+')
+              [ -z "$sdk" ] && sdk="unknown"
+              echo "| $sdk | \`$filename\` |"
+            done
+          } > packages_table.md
 
           cat > release_notes.md << NOTES
           ## luci-app-adguardhome v${{ steps.version.outputs.version }}
 
-          ### 📦 IPK Packages
+          ### 📦 Packages
 
           $(cat packages_table.md)
 
-          ### 📝 Recent Changes
+          ### 📝 Changes
 
           - Commit: \`${COMMIT_SHA}\` - ${COMMIT_MSG}
 
           ### 📋 Installation
 
           \`\`\`bash
+          # For OpenWrt 23/24 (IPK format)
           opkg install luci-app-adguardhome_*.ipk
+
+          # For OpenWrt 25+ (APK format)
+          apk add luci-app-adguardhome_*.apk
           \`\`\`
 
           ### ⚠️ Notes
 
-          - Package is architecture-independent (\`all\`)
-          - Compatible with OpenWrt 23.05+, 24.10+, 25.12+
-          - Requires AdGuardHome core to be installed separately
+          - IPK for OpenWrt 23/25, APK for OpenWrt 25+
+          - Requires AdGuardHome core installed separately
           NOTES
 
-          echo "Generated release notes:"
+          echo "Release notes:"
           cat release_notes.md
 
       - name: Create GitHub Release
@@ -217,7 +224,7 @@ jobs:
           name: ${{ inputs.release_title || format('luci-app-adguardhome v{0}', steps.version.outputs.version) }}
           tag_name: v${{ steps.version.outputs.version }}
           body_path: release_notes.md
-          files: artifacts/*.ipk
+          files: artifacts/*.*
           draft: false
           prerelease: false
           generate_release_notes: true
