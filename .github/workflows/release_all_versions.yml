@@ -15,7 +15,7 @@ on:
       release_title:
         description: "Release Title"
         required: false
-        default: "luci-app-adguardhome Release"
+        default: ""
       skip_release:
         description: "Skip GitHub Release (compile only)"
         type: boolean
@@ -98,7 +98,6 @@ jobs:
       - name: Collect Build Artifacts
         run: |
           VER="${{ matrix.version.short }}"
-          # Collect IPK files into workspace directory (not outside it)
           mkdir -p ipk_output
           for f in ../openwrt-sdk/bin/packages/x86_64/base/luci-app-adguardhome_*.ipk; do
             if [ -f "$f" ]; then
@@ -116,3 +115,92 @@ jobs:
           name: luci-app-adguardhome-openwrt${{ matrix.version.short }}
           path: ipk_output/*.ipk
           retention-days: 90
+
+  Release:
+    needs: Compile-All
+    if: ${{ !inputs.skip_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Determine Version
+        id: version
+        run: |
+          if [ -n "${{ inputs.release_version }}" ]; then
+            VERSION="${{ inputs.release_version }}"
+          else
+            # Auto-detect from Makefile
+            VERSION=$(grep 'PKG_VERSION\|PKG_RELEASE' luci-app-adguardhome/Makefile | \
+              awk -F':=' '{gsub(/[ \t]+/,"",$2); print $2}' | tr '\n' '-' | sed 's/-$//')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: luci-app-adguardhome-*
+          merge-multiple: true
+
+      - name: List Artifacts
+        run: |
+          echo "=== Downloaded IPK files ==="
+          ls -la artifacts/
+          echo ""
+          echo "=== File checksums ==="
+          sha256sum artifacts/*.ipk 2>/dev/null || true
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          # Get latest commit message
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" HEAD)
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+
+          cat > release_notes.md << NOTES
+          ## luci-app-adguardhome v${{ steps.version.outputs.version }}
+
+          ### 📦 IPK Packages
+
+          | OpenWrt Version | Package |
+          |----------------|---------|
+          | 23.05.x (GCC 12.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt23_all.ipk\` |
+          | 24.10.x (GCC 13.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt24_all.ipk\` |
+          | 25.12.x (GCC 14.3) | \`luci-app-adguardhome_${{ steps.version.outputs.version }}_openwrt25_all.ipk\` |
+
+          ### 📝 Recent Changes
+
+          - Commit: \`${COMMIT_SHA}\` - ${COMMIT_MSG}
+
+          ### 📋 Installation
+
+          \`\`\`bash
+          opkg install luci-app-adguardhome_*.ipk
+          \`\`\`
+
+          ### ⚠️ Notes
+
+          - Package is architecture-independent (\`all\`)
+          - Compatible with OpenWrt 23.05+, 24.10+, 25.12+
+          - Requires AdGuardHome core to be installed separately
+          NOTES
+
+          echo "Generated release notes:"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ inputs.release_title || format('luci-app-adguardhome v{0}', steps.version.outputs.version) }}
+          tag_name: v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: artifacts/*.ipk
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
